@@ -2,15 +2,20 @@ package main
 
 import (
 	"encoding/json"
+	"flag"
 	"fmt"
 	"log"
 	"net/http"
 )
 
 func main() {
-	PrintPrices()
+	limit := flag.Int("limit", 10, "How many of the top coins on CoinMarketCap to be shown")
+	convert := flag.String("Convert", "", "Convert the prices to a different currency other than USD")
+	flag.Parse()
+	PrintPrices(*limit, *convert)
 }
 
+// Currency is the type of response back from CoinMarketCap
 type Currency struct {
 	ID               string  `json:"id"`
 	Name             string  `json:"name"`
@@ -31,8 +36,9 @@ type Currency struct {
 	MarketCapEur     float64 `json:"market_cap_eur,string"`
 }
 
-func GetPrices() (*[]Currency, error) {
-	res, err := http.Get("https://api.coinmarketcap.com/v1/ticker/")
+// GetPrices gets the prices from CoinMarketCap
+func GetPrices(limit int, convert string) (*[]Currency, error) {
+	res, err := http.Get(fmt.Sprintf("https://api.coinmarketcap.com/v1/ticker/?limit=%v&convert=%s", limit, convert))
 	if err != nil {
 		return nil, fmt.Errorf("couldn't reach the api for prices: %v", err)
 	}
@@ -45,8 +51,9 @@ func GetPrices() (*[]Currency, error) {
 	return currencies, nil
 }
 
-func PrintPrices() {
-	currencies, err := GetPrices()
+// PrintPrices gets the prices from CoinMarketCap and prints them in the console
+func PrintPrices(limit int, convert string) {
+	currencies, err := GetPrices(limit, convert)
 	if err != nil {
 		log.Printf("couldn't get the prices of cryptocurrencies: %v", err)
 		return
