@@ -4,61 +4,73 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io/ioutil"
 	"log"
 	"net/http"
+	"strings"
+	"sync"
+	"time"
 )
 
 func main() {
-	limit := flag.Int("limit", 10, "How many of the top coins on CoinMarketCap to be shown")
-	convert := flag.String("Convert", "", "Convert the prices to a different currency other than USD")
-	flag.Parse()
-	PrintPrices(*limit, *convert)
-}
+	possibleConvert := []string{"AUD", "BRL", "CAD", "CHF", "CLP", "CNY", "CZK", "DKK", "EUR", "GBP",
+		"HKD", "HUF", "IDR", "ILS", "INR", "JPY", "KRW", "MXN", "MYR", "NOK", "NZD",
+		"PHP", "PKR", "PLN", "RUB", "SEK", "SGD", "THB", "TRY", "TWD", "ZAR"}
 
-// Currency is the type of response back from CoinMarketCap
-type Currency struct {
-	ID               string  `json:"id"`
-	Name             string  `json:"name"`
-	Symbol           string  `json:"symbol"`
-	Rank             int     `json:"rank,string"`
-	PriceUsd         float64 `json:"price_usd,string"`
-	PriceBtc         float64 `json:"price_btc,string"`
-	VolumeUsd24h     float64 `json:"24h_volume_usd,string"`
-	MarketCapUsd     float64 `json:"market_cap_usd,string"`
-	AvailableSupply  float64 `json:"available_supply,string"`
-	TotalSupply      float64 `json:"total_supply,string"`
-	PercentChange1H  float64 `json:"percent_change_1h,string"`
-	PercentChange24H float64 `json:"percent_change_24h,string"`
-	PercentChange7D  float64 `json:"percent_change_7d,string"`
-	LastUpdated      int64   `json:"last_updated,string"`
-	PriceEur         float64 `json:"price_eur,string"`
-	VolumeEur24h     float64 `json:"24h_volume_eur,string"`
-	MarketCapEur     float64 `json:"market_cap_eur,string"`
+	limit := flag.Int("limit", 10, "How many of the top coins on CoinMarketCap to be shown")
+	convert := flag.String("convert", "USD",
+		fmt.Sprintf("Convert the prices to a different currency other than USD, possible currencies are: %v", possibleConvert))
+	flag.Parse()
+
+	convertLowCase := strings.ToLower(*convert)
+
+	wg := &sync.WaitGroup{}
+	wg.Add(1)
+	go PrintPricesForever(*limit, convertLowCase, wg)
+	wg.Wait()
 }
 
 // GetPrices gets the prices from CoinMarketCap
-func GetPrices(limit int, convert string) (*[]Currency, error) {
+func GetPrices(limit int, convert string) (*[]map[string]string, error) {
 	res, err := http.Get(fmt.Sprintf("https://api.coinmarketcap.com/v1/ticker/?limit=%v&convert=%s", limit, convert))
 	if err != nil {
 		return nil, fmt.Errorf("couldn't reach the api for prices: %v", err)
 	}
 	defer res.Body.Close()
-	currencies := &[]Currency{}
-	if err = json.NewDecoder(res.Body).Decode(currencies); err != nil {
-		return nil, fmt.Errorf("couldn't decode json of prices: %v", err)
+	b, err := ioutil.ReadAll(res.Body)
+	if err != nil {
+		return nil, fmt.Errorf("couldn't read the response body sent from server: %v", err)
 	}
-
+	currencies := &[]map[string]string{}
+	if err := json.Unmarshal(b, currencies); err != nil {
+		return nil, fmt.Errorf("couldn't unmarshall the json sent from the server: %v", err)
+	}
 	return currencies, nil
 }
 
-// PrintPrices gets the prices from CoinMarketCap and prints them in the console
-func PrintPrices(limit int, convert string) {
+// PrintPricesForever gets the prices from CoinMarketCap and prints them in the console
+func PrintPricesForever(limit int, convert string, wg *sync.WaitGroup) {
+	fmt.Println("CoinMarketCap changes the price every 5 minutes. The new price would be printed here every 5 minutes")
 	currencies, err := GetPrices(limit, convert)
 	if err != nil {
 		log.Printf("couldn't get the prices of cryptocurrencies: %v", err)
 		return
 	}
 	for _, currency := range *currencies {
-		fmt.Printf("%s: %v USD\n", currency.Name, currency.PriceUsd)
+		fmt.Printf("%s: %v %s\n", currency["name"], currency[fmt.Sprintf("price_%s", convert)], strings.ToUpper(convert))
 	}
+
+	ticker := time.Tick(5 * time.Minute)
+	for _ = range ticker {
+		currencies, err := GetPrices(limit, convert)
+		if err != nil {
+			log.Printf("couldn't get the prices of cryptocurrencies: %v", err)
+			return
+		}
+		for _, currency := range *currencies {
+			fmt.Printf("%s: %v %s\n", currency["name"], currency[fmt.Sprintf("price_%s", convert)], strings.ToUpper(convert))
+		}
+	}
+
+	wg.Done()
 }
