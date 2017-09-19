@@ -1,87 +1,115 @@
 package main
 
 import (
-	"encoding/json"
 	"flag"
 	"fmt"
-	"io/ioutil"
 	"log"
-	"net/http"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
+
+	"github.com/sharno/cryptoPrices/coinmarketcap"
 )
 
 func main() {
-	possibleConvert := []string{"AUD", "BRL", "CAD", "CHF", "CLP", "CNY", "CZK", "DKK", "EUR", "GBP",
-		"HKD", "HUF", "IDR", "ILS", "INR", "JPY", "KRW", "MXN", "MYR", "NOK", "NZD",
-		"PHP", "PKR", "PLN", "RUB", "SEK", "SGD", "THB", "TRY", "TWD", "ZAR"}
 
-	limit := flag.Int("limit", 2, "How many of the top coins on CoinMarketCap to be shown")
+	limit := flag.Uint("limit", 2, "How many of the top coins on CoinMarketCap to be shown")
 	convert := flag.String("convert", "USD",
-		fmt.Sprintf("Convert the prices to a different currency other than USD, possible currencies are: %v", possibleConvert))
+		fmt.Sprintf("Convert the prices to a different currency other than USD, possible currencies are: %v", coinmarketcap.PossibleConvert))
+	coins := flag.String("coins", "", "List the coins you want to monitor for prices separated by commas without spaces, Example: BTC,ETH")
 	flag.Parse()
 
-	convertLowCase := strings.ToLower(*convert)
+	convertUpperCase := strings.ToUpper(*convert)
+	if !coinmarketcap.IsValidConvert(convertUpperCase) {
+		log.Fatalf("The currency you entered couldn't be converted to: %s, please enter a valid currency", convertUpperCase)
+	}
 
-	wg := &sync.WaitGroup{}
-	wg.Add(1)
-	go PrintPricesForever(*limit, convertLowCase, wg)
-	wg.Wait()
-}
+	if *coins != "" {
+		coinsParsed := []string{}
+		for _, v := range strings.Split(*coins, ",") {
+			coinsParsed = append(coinsParsed, strings.ToUpper(v))
+		}
+		PrintPricesForeverOfCoins(coinsParsed, convertUpperCase)
+	}
 
-// GetPrices gets the prices from CoinMarketCap
-func GetPrices(limit int, convert string) (*[]map[string]string, error) {
-	res, err := http.Get(fmt.Sprintf("https://api.coinmarketcap.com/v1/ticker/?limit=%v&convert=%s", limit, convert))
-	if err != nil {
-		return nil, fmt.Errorf("couldn't reach the api for prices: %v", err)
-	}
-	defer res.Body.Close()
-	b, err := ioutil.ReadAll(res.Body)
-	if err != nil {
-		return nil, fmt.Errorf("couldn't read the response body sent from server: %v", err)
-	}
-	coins := &[]map[string]string{}
-	if err := json.Unmarshal(b, coins); err != nil {
-		return nil, fmt.Errorf("couldn't unmarshall the json sent from the server: %v", err)
-	}
-	return coins, nil
+	PrintPricesForever(*limit, convertUpperCase)
 }
 
 // PrintPricesForever gets the prices from CoinMarketCap and prints them in the console every 5 minutes
-func PrintPricesForever(limit int, convert string, wg *sync.WaitGroup) {
-	fmt.Printf("CoinMarketCap changes the price every 5 minutes. The new price in %s would be printed here every 5 minutes\n\n",
-		strings.ToUpper(convert))
+func PrintPricesForever(limit uint, convert string) {
+	fmt.Printf("CoinMarketCap changes the price every 5 minutes. The new price in %s would be printed here every 5 minutes\n\n", convert)
 
 	prevPrices := &map[string]float64{}
-	PrintPrices(limit, convert, time.Now(), true, prevPrices)
-
-	ticker := time.Tick(5 * time.Minute)
-	for t := range ticker {
-		PrintPrices(limit, convert, t, false, prevPrices)
-	}
-
-	wg.Done()
-}
-
-// PrintPrices gets the prices from CoinMarketCap and prints them in the console every 5 minutes
-func PrintPrices(limit int, convert string, t time.Time, withNames bool, prevPrices *map[string]float64) {
-	coins, err := GetPrices(limit, convert)
+	data, err := coinmarketcap.GetPrices(limit, convert)
 	if err != nil {
 		log.Printf("couldn't get the prices of coins: %v", err)
 		return
 	}
+	PrintPrices(data, convert, time.Now(), true, prevPrices)
+
+	ticker := time.Tick(5 * time.Minute)
+	for t := range ticker {
+		data, err := coinmarketcap.GetPrices(limit, convert)
+		if err != nil {
+			log.Printf("couldn't get the prices of coins: %v", err)
+			return
+		}
+		PrintPrices(data, convert, t, false, prevPrices)
+	}
+}
+
+// PrintPricesForeverOfCoins gets the individual coins prices from CoinMarketCap and prints them to console every 5 minutes
+func PrintPricesForeverOfCoins(coins []string, convert string) {
+	fmt.Printf("CoinMarketCap changes the price every 5 minutes. The new price in %s would be printed here every 5 minutes\n\n", convert)
+
+	coinsIds := map[string]string{}
+	allCoinsData, err := coinmarketcap.GetPrices(0, "USD")
+	if err != nil {
+		log.Printf("couldn't get prices of coins: %v", err)
+	}
+	for _, c := range *allCoinsData {
+		coinsIds[c["symbol"]] = c["id"]
+	}
+
+	prevPrices := &map[string]float64{}
+	data := &[]map[string]string{}
+	for _, c := range coins {
+		coin, err := coinmarketcap.GetCoinPrice(coinsIds[c], convert)
+		if err != nil {
+			log.Printf("couldn't get the price of coin %s: %v", c, err)
+			return
+		}
+		*data = append(*data, *coin...)
+	}
+	PrintPrices(data, convert, time.Now(), true, prevPrices)
+
+	ticker := time.Tick(5 * time.Minute)
+	for t := range ticker {
+		data := &[]map[string]string{}
+		for _, c := range coins {
+			coin, err := coinmarketcap.GetCoinPrice(coinsIds[c], convert)
+			if err != nil {
+				log.Printf("couldn't get the price of coin %s: %v", c, err)
+				return
+			}
+			*data = append(*data, *coin...)
+		}
+		PrintPrices(data, convert, t, false, prevPrices)
+	}
+}
+
+// PrintPrices gets the prices from CoinMarketCap and prints them in the console every 5 minutes
+func PrintPrices(data *[]map[string]string, convert string, t time.Time, withNames bool, prevPrices *map[string]float64) {
 	if withNames {
 		fmt.Printf("%-18s", "timestamp")
-		for _, coin := range *coins {
+		for _, coin := range *data {
 			fmt.Printf("%-14s%-14s| ", coin["name"], "diff")
 		}
 		fmt.Println()
 	}
 	fmt.Printf("%-18s", t.Format(time.Stamp))
-	for _, coin := range *coins {
-		price, err := strconv.ParseFloat(coin[fmt.Sprintf("price_%s", convert)], 64)
+	for _, coin := range *data {
+		price, err := strconv.ParseFloat(coin[fmt.Sprintf("price_%s", strings.ToLower(convert))], 64)
 		if err != nil {
 			log.Printf("couldn't convert the price to a float: %v", err)
 			return
